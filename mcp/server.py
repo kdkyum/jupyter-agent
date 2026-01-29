@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-# Imports resolved at bottom when run as __main__
+# Sibling imports resolved in _init_imports() at startup
 JupyterClient = None
 NotebookTracker = None
 
@@ -53,6 +53,20 @@ def _load_session() -> dict | None:
     return None
 
 
+def _require_notebook() -> str | None:
+    """Return an error message if no notebook is open, else None."""
+    if not _client or not _notebook_path:
+        return "No notebook open. Use connect() or create_notebook() first."
+    return None
+
+
+def _require_kernel() -> str | None:
+    """Return an error message if no kernel is available, else None."""
+    if not _client or not _kernel_id:
+        return "No kernel available. Use connect() or create_notebook() first."
+    return None
+
+
 def _format_outputs(outputs: list) -> str:
     """Format cell outputs into readable text. Strips ANSI codes."""
     parts = []
@@ -81,6 +95,25 @@ def _format_outputs(outputs: list) -> str:
     return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", text)
 
 
+def _format_execution_result(result: dict, cell_index: int) -> str:
+    """Format execution result dict into a user-facing message."""
+    output_text = _format_outputs(result["outputs"])
+
+    if result["status"] == "ok":
+        msg = f"Executed successfully (cell {cell_index})."
+        if output_text.strip():
+            msg += f"\n\nOutput:\n{output_text.strip()}"
+        return msg
+
+    err = result.get("error", {})
+    msg = f"Execution error in cell {cell_index}.\n\n"
+    msg += f"{err.get('ename', 'Error')}: {err.get('evalue', '')}\n"
+    if err.get("traceback"):
+        msg += f"\nTraceback:\n{err['traceback']}"
+    msg += f"\n\nUse edit_and_run_cell(cell_index={cell_index}, new_source=...) to fix this cell."
+    return msg
+
+
 # ── Connection ───────────────────────────────────────────────────
 
 @mcp.tool()
@@ -98,7 +131,7 @@ async def connect(server_url: str, token: str, notebook_path: str = "", kernel_n
     _client = JupyterClient(server_url, token)
 
     try:
-        status = await _client.check_connection()
+        await _client.check_connection()
     except Exception as e:
         _client = None
         return f"Failed to connect: {e}"
@@ -234,8 +267,8 @@ async def read_notebook(mode: str = "full", last_n: int = 5) -> str:
         mode: "full" — all cells, "last_n" — last N cells, "summary" — cell count + types
         last_n: Number of recent cells to show when mode is "last_n"
     """
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     try:
         nb_data = await _client.get_notebook(_notebook_path)
@@ -290,8 +323,8 @@ async def add_cell(source: str, cell_type: str = "code", position: int = -1) -> 
         cell_type: "code" or "markdown"
         position: Where to insert (-1 = end, 0 = beginning, etc.)
     """
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     pos = None if position < 0 else position
     try:
@@ -310,8 +343,8 @@ async def edit_cell(cell_index: int, new_source: str) -> str:
         cell_index: Index of the cell to edit (0-based)
         new_source: New source code for the cell
     """
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     try:
         await _client.edit_cell_source(_notebook_path, cell_index, new_source)
@@ -330,8 +363,8 @@ async def get_cell_output(cell_index: int) -> str:
     Args:
         cell_index: Index of the cell (0-based)
     """
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     try:
         nb_data = await _client.get_notebook(_notebook_path)
@@ -370,8 +403,8 @@ async def execute_cell(
         add_to_notebook: If True, add/update the code as a cell in the notebook
         cell_index: If >= 0 and add_to_notebook, execute in this existing cell. If -1, append new cell.
     """
-    if not _client or not _kernel_id:
-        return "No kernel available. Use connect() or create_notebook() first."
+    if err := _require_kernel():
+        return err
 
     result = await _client.execute_code(_kernel_id, code, timeout)
 
@@ -389,24 +422,10 @@ async def execute_cell(
                 _, actual_index = await _client.add_cell_to_notebook(
                     _notebook_path, code, "code", outputs=result["outputs"]
                 )
-        except Exception as e:
-            pass  # Non-critical — code still executed
+        except Exception:
+            pass  # Non-critical -- code still executed
 
-    output_text = _format_outputs(result["outputs"])
-
-    if result["status"] == "ok":
-        msg = f"Executed successfully (cell {actual_index})."
-        if output_text.strip():
-            msg += f"\n\nOutput:\n{output_text.strip()}"
-        return msg
-    else:
-        err = result.get("error", {})
-        msg = f"Execution error in cell {actual_index}.\n\n"
-        msg += f"{err.get('ename', 'Error')}: {err.get('evalue', '')}\n"
-        if err.get("traceback"):
-            msg += f"\nTraceback:\n{err['traceback']}"
-        msg += f"\n\nUse edit_and_run_cell(cell_index={actual_index}, new_source=...) to fix this cell."
-        return msg
+    return _format_execution_result(result, actual_index)
 
 
 @mcp.tool()
@@ -422,7 +441,7 @@ async def edit_and_run_cell(cell_index: int, new_source: str, timeout: int = 120
     if not _client or not _kernel_id or not _notebook_path:
         return "No notebook/kernel available. Use connect() or create_notebook() first."
 
-    # Step 1: Edit the cell
+    # Edit the cell
     try:
         await _client.edit_cell_source(_notebook_path, cell_index, new_source)
     except IndexError as e:
@@ -430,30 +449,16 @@ async def edit_and_run_cell(cell_index: int, new_source: str, timeout: int = 120
     except Exception as e:
         return f"Failed to edit cell {cell_index}: {e}"
 
-    # Step 2: Execute the code
+    # Execute the code
     result = await _client.execute_code(_kernel_id, new_source, timeout)
 
-    # Step 3: Update outputs in notebook
+    # Update outputs in notebook
     try:
         await _client.update_cell_outputs(_notebook_path, cell_index, result["outputs"])
     except Exception:
         pass  # Non-critical
 
-    output_text = _format_outputs(result["outputs"])
-
-    if result["status"] == "ok":
-        msg = f"Cell {cell_index} edited and executed successfully."
-        if output_text.strip():
-            msg += f"\n\nOutput:\n{output_text.strip()}"
-        return msg
-    else:
-        err = result.get("error", {})
-        msg = f"Cell {cell_index} edited but execution failed.\n\n"
-        msg += f"{err.get('ename', 'Error')}: {err.get('evalue', '')}\n"
-        if err.get("traceback"):
-            msg += f"\nTraceback:\n{err['traceback']}"
-        msg += f"\n\nUse edit_and_run_cell(cell_index={cell_index}, new_source=...) to try again."
-        return msg
+    return _format_execution_result(result, cell_index)
 
 
 # ── Kernel Management ────────────────────────────────────────────
@@ -461,8 +466,8 @@ async def edit_and_run_cell(cell_index: int, new_source: str, timeout: int = 120
 @mcp.tool()
 async def restart_kernel() -> str:
     """Restart the kernel (clears all state, keeps notebook cells)."""
-    if not _client or not _kernel_id:
-        return "No kernel available. Use connect() or create_notebook() first."
+    if err := _require_kernel():
+        return err
 
     try:
         await _client.restart_kernel(_kernel_id)
@@ -475,8 +480,8 @@ async def restart_kernel() -> str:
 @mcp.tool()
 async def interrupt_kernel() -> str:
     """Interrupt a running execution in the kernel."""
-    if not _client or not _kernel_id:
-        return "No kernel available. Use connect() or create_notebook() first."
+    if err := _require_kernel():
+        return err
 
     try:
         await _client.interrupt_kernel(_kernel_id)
@@ -493,8 +498,8 @@ async def install_package(package: str) -> str:
     Args:
         package: Package name (e.g. "pandas", "numpy>=1.21")
     """
-    if not _client or not _kernel_id:
-        return "No kernel available. Use connect() or create_notebook() first."
+    if err := _require_kernel():
+        return err
 
     uv = shutil.which("uv")
     if not uv:
@@ -525,8 +530,8 @@ async def install_package(package: str) -> str:
 @mcp.tool()
 async def diff_notebook() -> str:
     """Detect changes the user made to the notebook since last snapshot."""
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     try:
         nb_data = await _client.get_notebook(_notebook_path)
@@ -539,23 +544,15 @@ async def diff_notebook() -> str:
         return result["summary"]
 
     parts = [result["summary"]]
+    cells = nb_data["content"].get("cells", [])
 
-    nb = nb_data["content"]
-    cells = nb.get("cells", [])
-
-    if result["added_cells"]:
-        parts.append("\nAdded cells:")
-        for idx in result["added_cells"]:
-            if idx < len(cells):
-                src = cells[idx].get("source", "")[:200]
-                parts.append(f"  [{idx}] {cells[idx]['cell_type']}: {src}")
-
-    if result["modified_cells"]:
-        parts.append("\nModified cells:")
-        for idx in result["modified_cells"]:
-            if idx < len(cells):
-                src = cells[idx].get("source", "")[:200]
-                parts.append(f"  [{idx}] {cells[idx]['cell_type']}: {src}")
+    for label, key in [("Added", "added_cells"), ("Modified", "modified_cells")]:
+        if result[key]:
+            parts.append(f"\n{label} cells:")
+            for idx in result[key]:
+                if idx < len(cells):
+                    src = cells[idx].get("source", "")[:200]
+                    parts.append(f"  [{idx}] {cells[idx]['cell_type']}: {src}")
 
     return "\n".join(parts)
 
@@ -563,8 +560,8 @@ async def diff_notebook() -> str:
 @mcp.tool()
 async def snapshot_notebook() -> str:
     """Save a snapshot of the current notebook state for future diffs."""
-    if not _client or not _notebook_path:
-        return "No notebook open. Use connect() or create_notebook() first."
+    if err := _require_notebook():
+        return err
 
     try:
         nb_data = await _client.get_notebook(_notebook_path)

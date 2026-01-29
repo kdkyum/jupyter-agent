@@ -35,27 +35,22 @@ class NotebookTracker:
         """
         current_hash = self._hash_notebook(current_content)
 
-        if self._snapshot is None:
+        def _no_change(summary: str) -> dict:
             return {
                 "changed": False,
-                "summary": "No snapshot taken yet. Use snapshot_notebook first.",
-                "added_cells": [],
-                "removed_cells": [],
-                "modified_cells": [],
-                "current_hash": current_hash,
-                "snapshot_hash": None,
-            }
-
-        if current_hash == self._snapshot_hash:
-            return {
-                "changed": False,
-                "summary": "No changes detected since last snapshot.",
+                "summary": summary,
                 "added_cells": [],
                 "removed_cells": [],
                 "modified_cells": [],
                 "current_hash": current_hash,
                 "snapshot_hash": self._snapshot_hash,
             }
+
+        if self._snapshot is None:
+            return _no_change("No snapshot taken yet. Use snapshot_notebook first.")
+
+        if current_hash == self._snapshot_hash:
+            return _no_change("No changes detected since last snapshot.")
 
         snap_cells = self._snapshot.get("cells", [])
         curr_cells = current_content.get("cells", [])
@@ -112,17 +107,15 @@ class NotebookTracker:
             return "".join(source)
         return source
 
-    @staticmethod
-    def _hash_notebook(nb: dict) -> str:
+    @classmethod
+    def _hash_notebook(cls, nb: dict) -> str:
         cells = nb.get("cells", [])
-        cell_data = []
-        for c in cells:
-            source = c.get("source", "")
-            if isinstance(source, list):
-                source = "".join(source)
-            cell_data.append({
+        cell_data = [
+            {
                 "type": c.get("cell_type", "code"),
-                "source": source,
+                "source": cls._cell_source(c),
                 "id": c.get("id", ""),
-            })
+            }
+            for c in cells
+        ]
         return hashlib.sha256(json.dumps(cell_data, sort_keys=True).encode()).hexdigest()[:16]

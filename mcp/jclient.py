@@ -1,11 +1,10 @@
 """Jupyter REST API + WebSocket client for connecting to an existing Jupyter server."""
 
 import asyncio
-import json
 import re
 import uuid
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -260,7 +259,7 @@ class JupyterClient:
                             "traceback": content.get("traceback", []),
                         })
                         status = "error"
-                    elif msg_type in ("execute_reply",):
+                    elif msg_type == "execute_reply":
                         if content.get("status") == "error" and error is None:
                             traceback_text = "\n".join(content.get("traceback", []))
                             error = {
