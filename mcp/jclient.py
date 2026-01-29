@@ -140,20 +140,19 @@ class JupyterClient:
             "content": content,
         })
 
-    async def create_notebook(self, path: str) -> dict:
+    async def create_notebook(self, path: str, kernel_name: str = "python3") -> dict:
         """Create a new empty notebook at the given path."""
         nb_content = {
             "nbformat": 4,
             "nbformat_minor": 5,
             "metadata": {
                 "kernelspec": {
-                    "display_name": "Python 3",
+                    "display_name": kernel_name,
                     "language": "python",
-                    "name": "python3",
+                    "name": kernel_name,
                 },
                 "language_info": {
                     "name": "python",
-                    "version": "3.10.0",
                 },
             },
             "cells": [],

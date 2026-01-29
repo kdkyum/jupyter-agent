@@ -1,0 +1,9 @@
+[project]
+name = "jupyter-agent"
+version = "1.0.0"
+description = "Claude Code plugin for Jupyter notebook-based research"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]",
+    "aiohttp",
+]

@@ -1,19 +1,13 @@
 """MCP server providing Jupyter notebook tools for Claude Code."""
 
-import asyncio
 import json
-import os
 import re
+import shutil
+import subprocess
 import sys
 from pathlib import Path
 
-# Ensure mcp package is available — install if missing
-try:
-    from mcp.server.fastmcp import FastMCP
-except ImportError:
-    import subprocess
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "mcp[cli]", "aiohttp", "-q"])
-    from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import FastMCP
 
 # Imports resolved at bottom when run as __main__
 JupyterClient = None
@@ -24,6 +18,8 @@ NotebookTracker = None
 _client = None  # JupyterClient instance
 _notebook_path: str | None = None
 _kernel_id: str | None = None
+_kernel_name: str | None = None
+_venv_path: str | None = None
 _tracker = None  # NotebookTracker instance
 
 SESSION_FILE = Path.home() / ".jupyter-agent-session.json"
@@ -41,6 +37,8 @@ def _save_session():
         "token": _client.token if _client else None,
         "notebook_path": _notebook_path,
         "kernel_id": _kernel_id,
+        "kernel_name": _kernel_name,
+        "venv_path": _venv_path,
     }
     SESSION_FILE.write_text(json.dumps(data))
 
@@ -86,13 +84,14 @@ def _format_outputs(outputs: list) -> str:
 # ── Connection ───────────────────────────────────────────────────
 
 @mcp.tool()
-async def connect(server_url: str, token: str, notebook_path: str = "") -> str:
+async def connect(server_url: str, token: str, notebook_path: str = "", kernel_name: str = "") -> str:
     """Connect to an existing Jupyter server.
 
     Args:
         server_url: The URL of the Jupyter server (e.g. http://localhost:8888)
         token: Authentication token for the Jupyter server
         notebook_path: Optional path to a notebook to open (e.g. "work/analysis.ipynb")
+        kernel_name: Kernel to use for new sessions (defaults to kernel set by setup_kernel, or "python3")
     """
     global _client, _notebook_path, _kernel_id
 
@@ -106,6 +105,8 @@ async def connect(server_url: str, token: str, notebook_path: str = "") -> str:
 
     result_parts = [f"Connected to Jupyter server at {server_url}"]
 
+    kname = kernel_name or _kernel_name or "python3"
+
     if notebook_path:
         _notebook_path = notebook_path
         try:
@@ -114,9 +115,9 @@ async def connect(server_url: str, token: str, notebook_path: str = "") -> str:
                 _kernel_id = session["kernel"]["id"]
                 result_parts.append(f"Found existing session for {notebook_path} (kernel: {_kernel_id[:8]}...)")
             else:
-                session = await _client.create_session(notebook_path)
+                session = await _client.create_session(notebook_path, kernel_name=kname)
                 _kernel_id = session["kernel"]["id"]
-                result_parts.append(f"Created session for {notebook_path} (kernel: {_kernel_id[:8]}...)")
+                result_parts.append(f"Created session for {notebook_path} (kernel: {kname}, {_kernel_id[:8]}...)")
         except Exception as e:
             result_parts.append(f"Note: could not open notebook '{notebook_path}': {e}")
             result_parts.append("Use create_notebook to create a new one, or connect with a valid path.")
@@ -125,23 +126,86 @@ async def connect(server_url: str, token: str, notebook_path: str = "") -> str:
     return "\n".join(result_parts)
 
 
+# ── Kernel Setup ─────────────────────────────────────────────────
+
+@mcp.tool()
+async def setup_kernel(venv_path: str, kernel_name: str = "") -> str:
+    """Set up a Jupyter kernel from a .venv directory.
+
+    Installs ipykernel into the venv and registers it as a Jupyter kernel.
+    All subsequent notebook operations will use this kernel.
+
+    Args:
+        venv_path: Path to the .venv directory (e.g. "/path/to/project/.venv")
+        kernel_name: Display name for the kernel (defaults to venv directory name)
+    """
+    global _venv_path, _kernel_name
+
+    venv = Path(venv_path).resolve()
+    if not venv.exists():
+        return f"venv not found: {venv}. Create it first with: uv venv {venv}"
+
+    python = venv / "bin" / "python"
+    if not python.exists():
+        return f"No python binary at {python}. Is this a valid venv?"
+
+    if not kernel_name:
+        kernel_name = venv.parent.name or "jupyter-agent"
+
+    _venv_path = str(venv)
+    _kernel_name = kernel_name
+
+    # Install ipykernel into the venv
+    uv = shutil.which("uv")
+    if not uv:
+        return "uv not found on PATH. Install it: https://docs.astral.sh/uv/"
+
+    try:
+        subprocess.run(
+            [uv, "pip", "install", "ipykernel", "--python", str(python)],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        return f"Failed to install ipykernel: {e.stderr}"
+
+    # Register the kernel
+    try:
+        subprocess.run(
+            [str(python), "-m", "ipykernel", "install", "--user",
+             f"--name={kernel_name}", f"--display-name={kernel_name}"],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        return f"Failed to register kernel: {e.stderr}"
+
+    _save_session()
+    return (
+        f"Kernel '{kernel_name}' set up from {venv}\n"
+        f"ipykernel installed and registered.\n"
+        f"Use create_notebook() or connect() — sessions will use this kernel."
+    )
+
+
 # ── Notebook Management ──────────────────────────────────────────
 
 @mcp.tool()
-async def create_notebook(path: str, title: str = "") -> str:
+async def create_notebook(path: str, title: str = "", kernel_name: str = "") -> str:
     """Create a new .ipynb notebook and start a kernel session for it.
 
     Args:
         path: Path for the new notebook (e.g. "research/experiment.ipynb")
         title: Optional title — added as a markdown cell at the top
+        kernel_name: Kernel to use (defaults to kernel set by setup_kernel, or "python3")
     """
     global _notebook_path, _kernel_id
 
     if not _client:
         return "Not connected. Use connect() first."
 
+    kname = kernel_name or _kernel_name or "python3"
+
     try:
-        await _client.create_notebook(path)
+        await _client.create_notebook(path, kernel_name=kname)
     except Exception as e:
         return f"Failed to create notebook: {e}"
 
@@ -151,7 +215,7 @@ async def create_notebook(path: str, title: str = "") -> str:
 
     # Create session (starts kernel)
     try:
-        session = await _client.create_session(path)
+        session = await _client.create_session(path, kernel_name=kname)
         _kernel_id = session["kernel"]["id"]
     except Exception as e:
         return f"Notebook created at {path} but failed to start kernel: {e}"
@@ -159,7 +223,7 @@ async def create_notebook(path: str, title: str = "") -> str:
     _notebook_path = path
     _save_session()
 
-    return f"Created notebook: {path}\nKernel started: {_kernel_id[:8]}...\nReady for execution."
+    return f"Created notebook: {path}\nKernel: {kname} ({_kernel_id[:8]}...)\nReady for execution."
 
 
 @mcp.tool()
@@ -424,7 +488,7 @@ async def interrupt_kernel() -> str:
 
 @mcp.tool()
 async def install_package(package: str) -> str:
-    """Install a Python package via pip in the kernel.
+    """Install a Python package into the kernel's venv using uv pip install.
 
     Args:
         package: Package name (e.g. "pandas", "numpy>=1.21")
@@ -432,15 +496,28 @@ async def install_package(package: str) -> str:
     if not _client or not _kernel_id:
         return "No kernel available. Use connect() or create_notebook() first."
 
-    code = f"import subprocess; subprocess.check_call(['pip', 'install', '{package}', '-q']); print('Installed: {package}')"
-    result = await _client.execute_code(_kernel_id, code, timeout=300)
-    output_text = _format_outputs(result["outputs"])
+    uv = shutil.which("uv")
+    if not uv:
+        return "uv not found on PATH. Install it: https://docs.astral.sh/uv/"
 
-    if result["status"] == "ok":
-        return f"Package installed: {package}\n{output_text.strip()}"
-    else:
-        err = result.get("error", {})
-        return f"Failed to install {package}: {err.get('evalue', 'unknown error')}"
+    # Install into the kernel's venv via uv
+    cmd = [uv, "pip", "install", package]
+    if _venv_path:
+        python = str(Path(_venv_path) / "bin" / "python")
+        cmd.extend(["--python", python])
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, timeout=300)
+        msg = f"Installed {package} via uv"
+        if _venv_path:
+            msg += f" into {_venv_path}"
+        if result.stdout.strip():
+            msg += f"\n{result.stdout.strip()}"
+        return msg
+    except subprocess.CalledProcessError as e:
+        return f"Failed to install {package}: {e.stderr}"
+    except subprocess.TimeoutExpired:
+        return f"Installation of {package} timed out."
 
 
 # ── Collaboration ────────────────────────────────────────────────
