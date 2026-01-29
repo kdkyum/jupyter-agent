@@ -1,9 +1,21 @@
 {
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jupyter-agent",
+  "version": "1.0.0",
+  "description": "Marketplace for the jupyter-agent plugin",
+  "owner": {
+    "name": "kdkyum"
+  },
   "plugins": [
     {
       "name": "jupyter-agent",
       "description": "Jupyter notebook-based researcher agent — connects to your running Jupyter server, executes code, and fixes errors in-place",
-      "source": "./"
+      "version": "1.0.0",
+      "author": {
+        "name": "kdkyum"
+      },
+      "source": "./",
+      "category": "development"
     }
   ]
 }

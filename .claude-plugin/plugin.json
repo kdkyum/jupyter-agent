@@ -2,13 +2,16 @@
   "name": "jupyter-agent",
   "version": "1.0.0",
   "description": "Jupyter notebook-based researcher agent — connects to your running Jupyter server, executes code, and fixes errors in-place",
-  "author": "kdkyum",
+  "author": {
+    "name": "kdkyum"
+  },
   "homepage": "https://github.com/kdkyum/jupyter-agent",
-  "mcp_servers": {
+  "repository": "https://github.com/kdkyum/jupyter-agent",
+  "mcpServers": {
     "jupyter-agent": {
       "command": "uv",
       "args": ["run", "python", "mcp/server.py"],
-      "description": "MCP server providing Jupyter notebook tools — connect, execute, edit, and manage notebooks"
+      "description": "MCP server providing Jupyter notebook tools"
     }
   }
 }
