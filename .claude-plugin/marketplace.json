@@ -1,0 +1,9 @@
+{
+  "plugins": [
+    {
+      "name": "jupyter-agent",
+      "description": "Jupyter notebook-based researcher agent — connects to your running Jupyter server, executes code, and fixes errors in-place",
+      "source": "./"
+    }
+  ]
+}
