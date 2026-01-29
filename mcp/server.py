@@ -357,6 +357,26 @@ async def edit_cell(cell_index: int, new_source: str) -> str:
 
 
 @mcp.tool()
+async def delete_cell(cell_index: int) -> str:
+    """Delete a cell from the notebook.
+
+    Args:
+        cell_index: Index of the cell to delete (0-based). All subsequent cells shift down by one.
+    """
+    if err := _require_notebook():
+        return err
+
+    try:
+        await _client.delete_cell(_notebook_path, cell_index)
+    except IndexError as e:
+        return str(e)
+    except Exception as e:
+        return f"Failed to delete cell: {e}"
+
+    return f"Cell {cell_index} deleted."
+
+
+@mcp.tool()
 async def get_cell_output(cell_index: int) -> str:
     """Get the output of a specific cell.
 

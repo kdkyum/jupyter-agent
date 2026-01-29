@@ -342,6 +342,19 @@ class JupyterClient:
         await self.save_notebook(notebook_path, nb)
         return nb
 
+    async def delete_cell(self, notebook_path: str, cell_index: int) -> dict:
+        """Delete a cell from the notebook. Returns updated notebook content."""
+        nb_data = await self.get_notebook(notebook_path)
+        nb = nb_data["content"]
+        cells = nb.get("cells", [])
+
+        if cell_index < 0 or cell_index >= len(cells):
+            raise IndexError(f"Cell index {cell_index} out of range (0-{len(cells)-1})")
+
+        removed = cells.pop(cell_index)
+        await self.save_notebook(notebook_path, nb)
+        return nb
+
     async def update_cell_outputs(
         self, notebook_path: str, cell_index: int, outputs: list, execution_count: int | None = None
     ) -> dict:
